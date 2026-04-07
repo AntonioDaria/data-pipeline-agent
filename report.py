@@ -229,14 +229,25 @@ def generate_report(
           <td class="center {'cmp-win' if claude_time <= ollama_time else 'cmp-lose'}">{claude_time:.0f}s ({speed_ratio:.1f}x faster)</td>
         </tr>
         <tr>
-          <td><strong>Execution cost</strong></td>
-          <td class="center cmp-win">$0.0000</td>
-          <td class="center cmp-lose">${claude_exec_cost:.4f}</td>
+          <td>
+            <strong>Planning cost</strong>
+            <div class="muted small">Claude Opus 4.6 — shared by both</div>
+          </td>
+          <td class="center muted">${planning_cost:.4f}</td>
+          <td class="center muted">${planning_cost:.4f}</td>
         </tr>
         <tr>
+          <td>
+            <strong>Execution cost</strong>
+            <div class="muted small">The part where the model choice matters</div>
+          </td>
+          <td class="center cmp-win"><strong>$0.0000 — free</strong></td>
+          <td class="center cmp-lose">${claude_exec_cost:.4f}</td>
+        </tr>
+        <tr class="total-row">
           <td><strong>Total cost</strong></td>
-          <td class="center cmp-win"><strong>${planning_cost:.4f}</strong></td>
-          <td class="center cmp-lose"><strong>${planning_cost + claude_exec_cost:.4f}</strong></td>
+          <td class="center">${planning_cost:.4f}</td>
+          <td class="center">${planning_cost + claude_exec_cost:.4f}</td>
         </tr>
       </tbody>
     </table>"""
@@ -405,7 +416,9 @@ def generate_report(
   <!-- COMPARISON -->
   <div class="card">
     <div class="card-title">⚡ Executor Comparison</div>
-    <div class="card-sub">Same plan, same data — head-to-head on success rate, speed, and cost.</div>
+    <div class="card-sub">Same plan, same data — head-to-head on success rate, speed, and cost.
+      Planning is a shared one-time cost (${planning_cost:.4f}) paid regardless of executor.
+      The execution cost is where the two approaches differ.</div>
     {comparison_table}
   </div>
 
