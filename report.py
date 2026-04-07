@@ -175,8 +175,45 @@ def generate_report(
           </div>
         </div>"""
 
+    # ── Detect whether execution tokens are real (Claude) or estimated (Ollama) ─
+    tokens_are_real = execution_log[0].get("tokens_are_real", False) if execution_log else False
+    token_label     = "" if tokens_are_real else "~"   # prefix for estimated values
+
     # ── Cost table rows ───────────────────────────────────────────────────────
-    cost_rows = f"""
+    if tokens_are_real:
+        # Claude executor: both columns show real costs; "if all Opus" shows Opus pricing
+        OPUS_IN  = 5.00  / 1_000_000
+        OPUS_OUT = 25.00 / 1_000_000
+        cost_rows = f"""
+        <tr class="planning-row">
+          <td><strong>Planning</strong></td>
+          <td>Claude Opus 4.6 ☁️</td>
+          <td class="center">{planner_tokens['input_tokens']:,} / {planner_tokens['output_tokens']:,}</td>
+          <td class="cost-red center">${actual_cost:.4f}</td>
+          <td class="cost-red center">${actual_cost:.4f}</td>
+        </tr>"""
+        for log in execution_log:
+            opus_cost = (log['est_claude_input_tokens'] * OPUS_IN +
+                         log['est_claude_output_tokens'] * OPUS_OUT)
+            cost_rows += f"""
+        <tr>
+          <td>Step {log['step_id']}: {log['name']}
+            {'<span class="ok">✓</span>' if log['success'] else '<span class="err">⚠</span>'}
+          </td>
+          <td class="local-model">{log['model']} ☁️</td>
+          <td class="center muted">{log['est_claude_input_tokens']:,} / {log['est_claude_output_tokens']:,}</td>
+          <td class="cost-red center">${log['est_claude_cost']:.4f}</td>
+          <td class="cost-red center">${opus_cost:.4f}</td>
+        </tr>"""
+        cost_rows += f"""
+        <tr class="total-row">
+          <td colspan="3"><strong>Total</strong></td>
+          <td class="cost-red center"><strong>${hypothetical:.4f}</strong></td>
+          <td class="cost-red center"><strong>${actual_cost + sum((l['est_claude_input_tokens']*OPUS_IN + l['est_claude_output_tokens']*OPUS_OUT) for l in execution_log):.4f}</strong></td>
+        </tr>"""
+    else:
+        # Ollama executor: actual cost = $0 per step; hypothetical shows Claude estimate
+        cost_rows = f"""
         <tr class="planning-row">
           <td><strong>Planning</strong></td>
           <td>Claude Opus 4.6 ☁️</td>
@@ -184,18 +221,18 @@ def generate_report(
           <td class="cost-green center"><strong>${actual_cost:.4f}</strong></td>
           <td class="cost-red center">${actual_cost:.4f}</td>
         </tr>"""
-    for log in execution_log:
-        cost_rows += f"""
+        for log in execution_log:
+            cost_rows += f"""
         <tr>
           <td>Step {log['step_id']}: {log['name']}
             {'<span class="ok">✓</span>' if log['success'] else '<span class="err">⚠</span>'}
           </td>
           <td class="local-model">{log['model']} 💻</td>
-          <td class="center muted">~{log['est_claude_input_tokens']} / ~{log['est_claude_output_tokens']}</td>
+          <td class="center muted">{token_label}{log['est_claude_input_tokens']} / {token_label}{log['est_claude_output_tokens']}</td>
           <td class="cost-green center"><strong>$0.0000</strong></td>
           <td class="cost-red center">${log['est_claude_cost']:.4f}</td>
         </tr>"""
-    cost_rows += f"""
+        cost_rows += f"""
         <tr class="total-row">
           <td colspan="3"><strong>Total</strong></td>
           <td class="cost-green center"><strong>${actual_cost:.4f}</strong></td>
@@ -397,35 +434,21 @@ def generate_report(
   <!-- COST SAVINGS -->
   <div class="card">
     <div class="card-title">💰 Cost Comparison</div>
-    <div class="card-sub">
-      <strong>Actual cost</strong> = Claude plans once, local model executes everything. &nbsp;
-      <strong>If all Claude</strong> = estimated cost if Claude had executed every step via the API.
-    </div>
+    {'<div class="card-sub"><strong>Actual cost</strong> = Claude plans once, local model executes everything. &nbsp;<strong>If all Haiku</strong> = what this run cost using Claude Haiku for every step.</div>' if tokens_are_real else '<div class="card-sub"><strong>Actual cost</strong> = Claude plans once, local model executes everything. &nbsp;<strong>If all Claude</strong> = estimated cost if Claude Haiku had executed every step via the API.</div>'}
     <table>
       <thead>
         <tr>
           <th>Phase</th>
           <th>Model</th>
           <th class="center">Tokens (in / out)</th>
-          <th class="center">Actual cost</th>
-          <th class="center">If all Claude</th>
+          <th class="center">{'This run' if tokens_are_real else 'Actual cost'}</th>
+          <th class="center">{'If all Opus' if tokens_are_real else 'If all Haiku'}</th>
         </tr>
       </thead>
       <tbody>{cost_rows}</tbody>
     </table>
 
-    <div class="savings">
-      <div class="savings-pct">{savings_pct:.0f}%</div>
-      <div class="savings-label">cost reduction with the planner-executor pattern</div>
-      <div class="savings-stats">
-        <div><div class="stat-val">${actual_cost:.4f}</div>
-             <div class="stat-lbl">Actual cost (this run)</div></div>
-        <div><div class="stat-val">${hypothetical:.4f}</div>
-             <div class="stat-lbl">If Claude ran everything</div></div>
-        <div><div class="stat-val">${exec_est_cost:.4f}</div>
-             <div class="stat-lbl">Saved by running locally</div></div>
-      </div>
-    </div>
+    {'<div class="savings" style="background:linear-gradient(135deg,#7b1fa2,#4a148c)"><div class="savings-pct">$' + f'{hypothetical:.4f}' + '</div><div class="savings-label">total cost running execution with Claude Haiku — vs $0.00 with Ollama</div><div class="savings-stats"><div><div class="stat-val">$' + f'{actual_cost:.4f}' + '</div><div class="stat-lbl">Planning (Claude Opus 4.6)</div></div><div><div class="stat-val">$' + f'{exec_est_cost:.4f}' + '</div><div class="stat-lbl">Execution (Claude Haiku)</div></div><div><div class="stat-val">$0.0000</div><div class="stat-lbl">Execution cost with Ollama</div></div></div></div>' if tokens_are_real else f'<div class="savings"><div class="savings-pct">{savings_pct:.0f}%</div><div class="savings-label">cost reduction with the planner-executor pattern</div><div class="savings-stats"><div><div class="stat-val">${actual_cost:.4f}</div><div class="stat-lbl">Actual cost (this run)</div></div><div><div class="stat-val">${hypothetical:.4f}</div><div class="stat-lbl">If Claude Haiku ran everything</div></div><div><div class="stat-val">${exec_est_cost:.4f}</div><div class="stat-lbl">Saved by running locally</div></div></div></div>'}
   </div>
 
   <!-- TECHNICAL DETAIL -->

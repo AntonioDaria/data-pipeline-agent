@@ -15,7 +15,6 @@ import argparse
 import time
 
 from planner import create_pipeline_plan
-from executor import execute_pipeline, OLLAMA_MODEL
 from report import generate_report
 
 DEFAULT_CSV  = "data/customers.csv"
@@ -29,15 +28,24 @@ DIVIDER = "─" * 62
 
 def main():
     parser = argparse.ArgumentParser(description="Data Pipeline Agent Demo")
-    parser.add_argument("--csv",  default=DEFAULT_CSV,  help="Path to input CSV")
-    parser.add_argument("--goal", default=DEFAULT_GOAL, help="Analysis goal")
+    parser.add_argument("--csv",      default=DEFAULT_CSV,   help="Path to input CSV")
+    parser.add_argument("--goal",     default=DEFAULT_GOAL,  help="Analysis goal")
+    parser.add_argument("--executor", default="ollama",      choices=["ollama", "claude"],
+                        help="Execution engine: ollama (local, free) or claude (API, paid)")
     args = parser.parse_args()
+
+    # Import the right executor at runtime
+    if args.executor == "claude":
+        from claude_executor import execute_pipeline, CLAUDE_EXECUTOR_MODEL as executor_label
+    else:
+        from executor import execute_pipeline, OLLAMA_MODEL as executor_label
 
     print(f"\n{'═' * 62}")
     print("  DATA PIPELINE AGENT — Planner / Executor Pattern")
     print(f"{'═' * 62}\n")
-    print(f"  CSV  : {args.csv}")
-    print(f"  Goal : {args.goal[:70]}...")
+    print(f"  CSV      : {args.csv}")
+    print(f"  Goal     : {args.goal[:70]}...")
+    print(f"  Executor : {executor_label}")
     print()
 
     run_start = time.time()
@@ -62,9 +70,9 @@ def main():
         print(f"    [{step['step_id']}] {step['name']}")
     print()
 
-    # ── PHASE 2 : EXECUTION (Ollama) ─────────────────────────────────────────
+    # ── PHASE 2 : EXECUTION ──────────────────────────────────────────────────
     print(f"{DIVIDER}")
-    print(f"  PHASE 2 — Executing with Ollama ({OLLAMA_MODEL})")
+    print(f"  PHASE 2 — Executing with {executor_label}")
     print(f"{DIVIDER}")
     phase2_start = time.time()
 
@@ -96,12 +104,16 @@ def main():
     print(f"{'═' * 62}")
     print(f"  Report       : {report_path}")
     print(f"  Total time   : {total_time:.1f}s\n")
-    print(f"  {'COST BREAKDOWN':30s}  {'ACTUAL':>10}  {'IF ALL CLAUDE':>14}")
+    tokens_are_real = execution_log[0].get("tokens_are_real", False) if execution_log else False
+    col2_label = "ACTUAL COST" if tokens_are_real else "ACTUAL COST"
+    col3_label = "IF ALL HAIKU" if tokens_are_real else "IF ALL HAIKU"
+    print(f"  {'COST BREAKDOWN':30s}  {'ACTUAL':>10}  {col3_label:>14}")
     print(f"  {'─'*30}  {'─'*10}  {'─'*14}")
     print(f"  {'Planning (Claude Opus 4.6)':30s}  ${actual:>9.4f}  ${actual:>13.4f}")
     for log in execution_log:
         label = f"Step {log['step_id']}: {log['name']}"[:30]
-        print(f"  {label:30s}  {'$0.0000':>10}  ${log['est_claude_cost']:>13.4f}")
+        step_actual = f"${log['est_claude_cost']:>9.4f}" if tokens_are_real else f"{'$0.0000':>10}"
+        print(f"  {label:30s}  {step_actual}  ${log['est_claude_cost']:>13.4f}")
     print(f"  {'─'*30}  {'─'*10}  {'─'*14}")
     print(f"  {'TOTAL':30s}  ${actual:>9.4f}  ${hypo:>13.4f}")
     print(f"\n  🎉 Savings: {savings_pc:.0f}%  (${exec_est:.4f} kept local)\n")

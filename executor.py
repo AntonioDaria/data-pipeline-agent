@@ -20,10 +20,11 @@ from contextlib import redirect_stdout
 OLLAMA_MODEL    = "qwen2.5-coder:7b"
 OLLAMA_BASE_URL = "http://localhost:11434"
 
-# Conservative estimate of tokens Claude would need per execution step
-# (prompt context + code generation) — used for the cost comparison report
-ESTIMATED_CLAUDE_INPUT_TOKENS_PER_STEP  = 650
-ESTIMATED_CLAUDE_OUTPUT_TOKENS_PER_STEP = 380
+# Measured token usage from a Claude Haiku execution run (--executor claude).
+# Input is higher than intuition suggests — the prompt includes DataFrame schema,
+# column dtypes, and the pandas hint. Output is short — just the code snippet.
+ESTIMATED_CLAUDE_INPUT_TOKENS_PER_STEP  = 900
+ESTIMATED_CLAUDE_OUTPUT_TOKENS_PER_STEP = 130
 CLAUDE_INPUT_COST_PER_TOKEN  = 5.00  / 1_000_000
 CLAUDE_OUTPUT_COST_PER_TOKEN = 25.00 / 1_000_000
 
