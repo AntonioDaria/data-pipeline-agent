@@ -8,6 +8,9 @@ plan that the local Ollama executor can follow without ambiguity.
 import json
 import anthropic
 import pandas as pd
+from dotenv import load_dotenv
+
+load_dotenv()
 
 CLAUDE_MODEL = "claude-opus-4-6"
 
@@ -78,13 +81,18 @@ def create_pipeline_plan(csv_path: str, goal: str) -> tuple[dict, dict]:
 
     response = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=2048,
+        max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
 
-    raw_text = response.content[0].text
-    plan = json.loads(raw_text)
+    raw_text = response.content[0].text.strip()
+    # Strip markdown fences if Claude wraps the JSON
+    if raw_text.startswith("```"):
+        raw_text = "\n".join(raw_text.split("\n")[1:])
+    if raw_text.endswith("```"):
+        raw_text = "\n".join(raw_text.split("\n")[:-1])
+    plan = json.loads(raw_text.strip())
 
     input_tokens  = response.usage.input_tokens
     output_tokens = response.usage.output_tokens
