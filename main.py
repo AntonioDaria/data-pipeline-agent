@@ -3,8 +3,8 @@ main.py — Planner-Executor Pipeline Demo
 
 Architecture:
   1. Claude Opus 4.6 (planner)  — reads schema, produces a strict JSON plan
-  2. Ollama / qwen2.5-coder:7b (executor) — follows the plan step-by-step
-  3. HTML report — shows results + exact cost comparison
+  2. Ollama + Claude Haiku run the SAME plan in parallel
+  3. HTML report — side-by-side comparison: success rate, speed, cost
 
 Usage:
     python main.py
@@ -13,9 +13,12 @@ Usage:
 
 import argparse
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from planner import create_pipeline_plan
 from report import generate_report
+import executor as ollama_executor
+import claude_executor as claude_executor_mod
 
 DEFAULT_CSV  = "data/customers.csv"
 DEFAULT_GOAL = (
@@ -26,31 +29,29 @@ DEFAULT_GOAL = (
 DIVIDER = "─" * 62
 
 
+def _run_timed(fn, csv_path, plan):
+    """Run an execute_pipeline function and return (results, log, elapsed_seconds)."""
+    t0 = time.time()
+    results, log = fn(csv_path, plan)
+    return results, log, round(time.time() - t0, 1)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Data Pipeline Agent Demo")
-    parser.add_argument("--csv",      default=DEFAULT_CSV,   help="Path to input CSV")
-    parser.add_argument("--goal",     default=DEFAULT_GOAL,  help="Analysis goal")
-    parser.add_argument("--executor", default="ollama",      choices=["ollama", "claude"],
-                        help="Execution engine: ollama (local, free) or claude (API, paid)")
+    parser.add_argument("--csv",  default=DEFAULT_CSV,  help="Path to input CSV")
+    parser.add_argument("--goal", default=DEFAULT_GOAL, help="Analysis goal")
     args = parser.parse_args()
-
-    # Import the right executor at runtime
-    if args.executor == "claude":
-        from claude_executor import execute_pipeline, CLAUDE_EXECUTOR_MODEL as executor_label
-    else:
-        from executor import execute_pipeline, OLLAMA_MODEL as executor_label
 
     print(f"\n{'═' * 62}")
     print("  DATA PIPELINE AGENT — Planner / Executor Pattern")
     print(f"{'═' * 62}\n")
-    print(f"  CSV      : {args.csv}")
-    print(f"  Goal     : {args.goal[:70]}...")
-    print(f"  Executor : {executor_label}")
+    print(f"  CSV  : {args.csv}")
+    print(f"  Goal : {args.goal[:70]}...")
     print()
 
     run_start = time.time()
 
-    # ── PHASE 1 : PLANNING (Claude) ──────────────────────────────────────────
+    # ── PHASE 1 : PLANNING (Claude Opus) ─────────────────────────────────────
     print(f"{DIVIDER}")
     print("  PHASE 1 — Planning with Claude Opus 4.6")
     print(f"{DIVIDER}")
@@ -65,23 +66,30 @@ def main():
           f"({planner_tokens['input_tokens']:,} in / {planner_tokens['output_tokens']:,} out)")
     print(f"    Cost:    ${planner_tokens['total_cost']:.4f}")
     print()
-
     for step in plan["steps"]:
         print(f"    [{step['step_id']}] {step['name']}")
     print()
 
-    # ── PHASE 2 : EXECUTION ──────────────────────────────────────────────────
+    # ── PHASE 2 : PARALLEL EXECUTION ─────────────────────────────────────────
     print(f"{DIVIDER}")
-    print(f"  PHASE 2 — Executing with {executor_label}")
+    print(f"  PHASE 2 — Running Ollama ({ollama_executor.OLLAMA_MODEL})"
+          f" and Claude ({claude_executor_mod.CLAUDE_EXECUTOR_MODEL}) in parallel")
     print(f"{DIVIDER}")
-    phase2_start = time.time()
 
-    results, execution_log = execute_pipeline(args.csv, plan)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ollama_future = pool.submit(_run_timed, ollama_executor.execute_pipeline,
+                                    args.csv, plan)
+        claude_future = pool.submit(_run_timed, claude_executor_mod.execute_pipeline,
+                                    args.csv, plan)
 
-    phase2_time = time.time() - phase2_start
-    successes = sum(1 for s in execution_log if s["success"])
-    print(f"\n  ✓ Execution done in {phase2_time:.1f}s  "
-          f"({successes}/{len(execution_log)} steps succeeded)\n")
+        ollama_results, ollama_log, ollama_time = ollama_future.result()
+        claude_results, claude_log, claude_time = claude_future.result()
+
+    ollama_ok = sum(1 for s in ollama_log if s["success"])
+    claude_ok = sum(1 for s in claude_log if s["success"])
+    print(f"\n  ✓ Both executors done")
+    print(f"    Ollama : {ollama_time:.1f}s  ({ollama_ok}/{len(ollama_log)} steps succeeded)")
+    print(f"    Claude : {claude_time:.1f}s  ({claude_ok}/{len(claude_log)} steps succeeded)\n")
 
     # ── PHASE 3 : REPORT ─────────────────────────────────────────────────────
     print(f"{DIVIDER}")
@@ -90,33 +98,31 @@ def main():
 
     total_time  = time.time() - run_start
     report_path = generate_report(
-        plan, planner_tokens, results, execution_log, total_time, args.goal
+        plan, planner_tokens,
+        ollama_results, ollama_log, ollama_time,
+        claude_results, claude_log, claude_time,
+        total_time, args.goal,
     )
 
     # ── SUMMARY ──────────────────────────────────────────────────────────────
-    exec_est   = sum(s["est_claude_cost"] for s in execution_log)
-    actual     = planner_tokens["total_cost"]
-    hypo       = actual + exec_est
-    savings_pc = exec_est / hypo * 100 if hypo > 0 else 0
+    planning_cost  = planner_tokens["total_cost"]
+    ollama_cost    = sum(s["est_claude_cost"] for s in ollama_log)   # $0
+    claude_ex_cost = sum(s["est_claude_cost"] for s in claude_log)   # real $
 
     print(f"\n{'═' * 62}")
     print("  RESULTS")
     print(f"{'═' * 62}")
-    print(f"  Report       : {report_path}")
-    print(f"  Total time   : {total_time:.1f}s\n")
-    tokens_are_real = execution_log[0].get("tokens_are_real", False) if execution_log else False
-    col2_label = "ACTUAL COST" if tokens_are_real else "ACTUAL COST"
-    col3_label = "IF ALL HAIKU" if tokens_are_real else "IF ALL HAIKU"
-    print(f"  {'COST BREAKDOWN':30s}  {'ACTUAL':>10}  {col3_label:>14}")
+    print(f"  Report     : {report_path}")
+    print(f"  Total time : {total_time:.1f}s\n")
+    print(f"  {'':30s}  {'OLLAMA':>10}  {'CLAUDE HAIKU':>14}")
     print(f"  {'─'*30}  {'─'*10}  {'─'*14}")
-    print(f"  {'Planning (Claude Opus 4.6)':30s}  ${actual:>9.4f}  ${actual:>13.4f}")
-    for log in execution_log:
-        label = f"Step {log['step_id']}: {log['name']}"[:30]
-        step_actual = f"${log['est_claude_cost']:>9.4f}" if tokens_are_real else f"{'$0.0000':>10}"
-        print(f"  {label:30s}  {step_actual}  ${log['est_claude_cost']:>13.4f}")
+    print(f"  {'Planning (shared)':30s}  ${planning_cost:>9.4f}  ${planning_cost:>13.4f}")
+    print(f"  {'Execution':30s}  {'$0.0000':>10}  ${claude_ex_cost:>13.4f}")
     print(f"  {'─'*30}  {'─'*10}  {'─'*14}")
-    print(f"  {'TOTAL':30s}  ${actual:>9.4f}  ${hypo:>13.4f}")
-    print(f"\n  🎉 Savings: {savings_pc:.0f}%  (${exec_est:.4f} kept local)\n")
+    print(f"  {'TOTAL':30s}  ${planning_cost:>9.4f}  ${planning_cost + claude_ex_cost:>13.4f}")
+    print(f"\n  Steps:  Ollama {ollama_ok}/{len(ollama_log)}  ·  "
+          f"Claude {claude_ok}/{len(claude_log)}")
+    print(f"  Speed:  Ollama {ollama_time:.0f}s  ·  Claude {claude_time:.0f}s\n")
 
 
 if __name__ == "__main__":

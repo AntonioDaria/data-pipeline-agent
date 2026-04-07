@@ -110,33 +110,64 @@ def _compute_results(df: pd.DataFrame) -> dict:
     return tables
 
 
+def _steps_detail_html(steps: list, execution_log: list, executor_label: str) -> str:
+    """Render the step-by-step technical detail for one executor."""
+    html = f'<div class="executor-label">{executor_label}</div>'
+    for s in steps:
+        log = next((l for l in execution_log if l["step_id"] == s["step_id"]), None)
+        status_html = ('<span class="ok small">✓ ran</span>' if (log and log["success"])
+                       else '<span class="err small">⚠ error</span>' if log else "")
+        code_html = ""
+        if log:
+            code_html = (f'<details><summary class="show-code">View generated code</summary>'
+                         f'<pre><code>{log["code"]}</code></pre>'
+                         f'<div class="output-line">Output: {log["output"]}</div></details>')
+        html += f"""
+        <div class="step-row">
+          <div class="step-meta">
+            <span class="step-num">{s['step_id']}</span>
+            <div><strong>{s['name']}</strong>
+              <div class="muted small">{s['description']}</div>
+            </div>
+            {_badge(s['action'], _action_color(s['action']))}
+            {status_html}
+          </div>
+          {code_html}
+        </div>"""
+    return html
+
+
 def generate_report(
     plan: dict,
     planner_tokens: dict,
-    results: dict,
-    execution_log: list,
+    ollama_results: dict,
+    ollama_log: list,
+    ollama_time: float,
+    claude_results: dict,
+    claude_log: list,
+    claude_time: float,
     total_seconds: float,
     goal: str,
 ) -> str:
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    steps          = plan.get("steps", [])
-    final_df       = results.get("final_df", pd.DataFrame())
-    enriched_df    = results.get("enriched_df", final_df)
-    executor_model = execution_log[0]["model"] if execution_log else "Ollama (local)"
-    successes      = sum(1 for s in execution_log if s["success"])
+    from claude_executor import CLAUDE_EXECUTOR_MODEL
+    from executor import OLLAMA_MODEL
+
+    steps = plan.get("steps", [])
+
+    # ── Use Claude's enriched_df for results — it's the reliable executor ─────
+    claude_enriched = claude_results.get("enriched_df",
+                      claude_results.get("final_df", pd.DataFrame()))
+    tables = _compute_results(claude_enriched)
 
     # ── Cost numbers ──────────────────────────────────────────────────────────
-    actual_cost   = planner_tokens["total_cost"]
-    exec_est_cost = sum(s["est_claude_cost"] for s in execution_log)
-    hypothetical  = actual_cost + exec_est_cost
-    savings_pct   = (exec_est_cost / hypothetical * 100) if hypothetical > 0 else 0
-
-    # ── Computed result tables (ground truth) ─────────────────────────────────
-    # Use enriched_df: preserves all rows + computed columns (churn_risk_score etc.)
-    # even after aggregation/filter steps reduce the final_df row count.
-    tables = _compute_results(enriched_df)
+    planning_cost    = planner_tokens["total_cost"]
+    claude_exec_cost = sum(s["est_claude_cost"] for s in claude_log)
+    ollama_ok        = sum(1 for s in ollama_log if s["success"])
+    claude_ok        = sum(1 for s in claude_log if s["success"])
+    n                = len(steps)
 
     # ── Results section HTML ──────────────────────────────────────────────────
     results_html = ""
@@ -175,93 +206,40 @@ def generate_report(
           </div>
         </div>"""
 
-    # ── Detect whether execution tokens are real (Claude) or estimated (Ollama) ─
-    tokens_are_real = execution_log[0].get("tokens_are_real", False) if execution_log else False
-    token_label     = "" if tokens_are_real else "~"   # prefix for estimated values
-
-    # ── Cost table rows ───────────────────────────────────────────────────────
-    if tokens_are_real:
-        # Claude executor: both columns show real costs; "if all Opus" shows Opus pricing
-        OPUS_IN  = 5.00  / 1_000_000
-        OPUS_OUT = 25.00 / 1_000_000
-        cost_rows = f"""
-        <tr class="planning-row">
-          <td><strong>Planning</strong></td>
-          <td>Claude Opus 4.6 ☁️</td>
-          <td class="center">{planner_tokens['input_tokens']:,} / {planner_tokens['output_tokens']:,}</td>
-          <td class="cost-red center">${actual_cost:.4f}</td>
-          <td class="cost-red center">${actual_cost:.4f}</td>
-        </tr>"""
-        for log in execution_log:
-            opus_cost = (log['est_claude_input_tokens'] * OPUS_IN +
-                         log['est_claude_output_tokens'] * OPUS_OUT)
-            cost_rows += f"""
+    # ── Comparison table ──────────────────────────────────────────────────────
+    speed_ratio = ollama_time / claude_time if claude_time > 0 else 1
+    comparison_table = f"""
+    <table class="cmp-table">
+      <thead>
         <tr>
-          <td>Step {log['step_id']}: {log['name']}
-            {'<span class="ok">✓</span>' if log['success'] else '<span class="err">⚠</span>'}
-          </td>
-          <td class="local-model">{log['model']} ☁️</td>
-          <td class="center muted">{log['est_claude_input_tokens']:,} / {log['est_claude_output_tokens']:,}</td>
-          <td class="cost-red center">${log['est_claude_cost']:.4f}</td>
-          <td class="cost-red center">${opus_cost:.4f}</td>
-        </tr>"""
-        cost_rows += f"""
-        <tr class="total-row">
-          <td colspan="3"><strong>Total</strong></td>
-          <td class="cost-red center"><strong>${hypothetical:.4f}</strong></td>
-          <td class="cost-red center"><strong>${actual_cost + sum((l['est_claude_input_tokens']*OPUS_IN + l['est_claude_output_tokens']*OPUS_OUT) for l in execution_log):.4f}</strong></td>
-        </tr>"""
-    else:
-        # Ollama executor: actual cost = $0 per step; hypothetical shows Claude estimate
-        cost_rows = f"""
-        <tr class="planning-row">
-          <td><strong>Planning</strong></td>
-          <td>Claude Opus 4.6 ☁️</td>
-          <td class="center">{planner_tokens['input_tokens']:,} / {planner_tokens['output_tokens']:,}</td>
-          <td class="cost-green center"><strong>${actual_cost:.4f}</strong></td>
-          <td class="cost-red center">${actual_cost:.4f}</td>
-        </tr>"""
-        for log in execution_log:
-            cost_rows += f"""
+          <th></th>
+          <th class="center">Ollama<br><span class="muted small">{OLLAMA_MODEL}</span></th>
+          <th class="center">Claude Haiku<br><span class="muted small">{CLAUDE_EXECUTOR_MODEL}</span></th>
+        </tr>
+      </thead>
+      <tbody>
         <tr>
-          <td>Step {log['step_id']}: {log['name']}
-            {'<span class="ok">✓</span>' if log['success'] else '<span class="err">⚠</span>'}
-          </td>
-          <td class="local-model">{log['model']} 💻</td>
-          <td class="center muted">{token_label}{log['est_claude_input_tokens']} / {token_label}{log['est_claude_output_tokens']}</td>
-          <td class="cost-green center"><strong>$0.0000</strong></td>
-          <td class="cost-red center">${log['est_claude_cost']:.4f}</td>
-        </tr>"""
-        cost_rows += f"""
-        <tr class="total-row">
-          <td colspan="3"><strong>Total</strong></td>
-          <td class="cost-green center"><strong>${actual_cost:.4f}</strong></td>
-          <td class="cost-red center"><strong>${hypothetical:.4f}</strong></td>
-        </tr>"""
-
-    # ── Technical detail rows ─────────────────────────────────────────────────
-    steps_detail = ""
-    for s in steps:
-        log = next((l for l in execution_log if l["step_id"] == s["step_id"]), None)
-        status_html = ('<span class="ok small">✓ ran</span>' if (log and log["success"])
-                       else '<span class="err small">⚠ error</span>' if log else "")
-        code_html = ""
-        if log:
-            code_html = (f'<details><summary class="show-code">View generated code</summary>'
-                         f'<pre><code>{log["code"]}</code></pre>'
-                         f'<div class="output-line">Output: {log["output"]}</div></details>')
-        steps_detail += f"""
-        <div class="step-row">
-          <div class="step-meta">
-            <span class="step-num">{s['step_id']}</span>
-            <div><strong>{s['name']}</strong>
-              <div class="muted small">{s['description']}</div>
-            </div>
-            {_badge(s['action'], _action_color(s['action']))}
-            {status_html}
-          </div>
-          {code_html}
-        </div>"""
+          <td><strong>Success rate</strong></td>
+          <td class="center {'cmp-win' if ollama_ok >= claude_ok else 'cmp-lose'}">{ollama_ok}/{n} steps</td>
+          <td class="center {'cmp-win' if claude_ok >= ollama_ok else 'cmp-lose'}">{claude_ok}/{n} steps</td>
+        </tr>
+        <tr>
+          <td><strong>Execution time</strong></td>
+          <td class="center {'cmp-win' if ollama_time <= claude_time else 'cmp-lose'}">{ollama_time:.0f}s</td>
+          <td class="center {'cmp-win' if claude_time <= ollama_time else 'cmp-lose'}">{claude_time:.0f}s ({speed_ratio:.1f}x faster)</td>
+        </tr>
+        <tr>
+          <td><strong>Execution cost</strong></td>
+          <td class="center cmp-win">$0.0000</td>
+          <td class="center cmp-lose">${claude_exec_cost:.4f}</td>
+        </tr>
+        <tr>
+          <td><strong>Total cost</strong></td>
+          <td class="center cmp-win"><strong>${planning_cost:.4f}</strong></td>
+          <td class="center cmp-lose"><strong>${planning_cost + claude_exec_cost:.4f}</strong></td>
+        </tr>
+      </tbody>
+    </table>"""
 
     # ── Full HTML ─────────────────────────────────────────────────────────────
     html = f"""<!DOCTYPE html>
@@ -315,8 +293,7 @@ def generate_report(
 
   /* Results */
   .result-block {{ margin-bottom:1.5rem; }}
-  .result-header {{ display:flex; align-items:center; gap:.75rem;
-                    margin-bottom:.75rem; }}
+  .result-header {{ display:flex; align-items:center; gap:.75rem; margin-bottom:.75rem; }}
   .result-icon {{ font-size:1.4rem; }}
   .result-header strong {{ font-size:1rem; font-weight:700; display:block; }}
   .result-meta {{ font-size:.82rem; color:var(--gray); }}
@@ -324,35 +301,32 @@ def generate_report(
   @media(max-width:680px) {{ .result-grid {{ grid-template-columns:1fr; }} }}
   .table-wrap {{ overflow-x:auto; }}
   .table-note {{ font-size:.78rem; color:var(--gray); margin-top:.5rem; }}
+
+  /* Tables */
   table {{ width:100%; border-collapse:collapse; font-size:.85rem; }}
   th {{ background:var(--light); padding:.6rem .8rem; text-align:left;
-        border-bottom:2px solid var(--border); font-weight:600;
-        white-space:nowrap; }}
-  td {{ padding:.5rem .8rem; border-bottom:1px solid var(--border);
-        vertical-align:middle; }}
+        border-bottom:2px solid var(--border); font-weight:600; white-space:nowrap; }}
+  td {{ padding:.5rem .8rem; border-bottom:1px solid var(--border); vertical-align:middle; }}
   tr:last-child td {{ border-bottom:none; }}
   tr:hover td {{ background:#fafafa; }}
 
-  /* Cost table specifics */
+  /* Comparison table */
+  .cmp-table {{ margin-top:1rem; }}
+  .cmp-table th {{ font-size:.88rem; }}
+  .cmp-win {{ color:var(--green); font-weight:600; }}
+  .cmp-lose {{ color:var(--gray); }}
+
+  /* Cost table */
   .planning-row td {{ background:#fffde7; }}
-  .total-row td {{ background:var(--light); }}
+  .total-row td {{ background:var(--light); font-weight:600; }}
   .cost-green {{ color:var(--green); font-weight:600; }}
   .cost-red   {{ color:var(--red); }}
   .local-model {{ color:var(--purple); font-size:.82rem; }}
   .center {{ text-align:center; }}
 
-  /* Savings banner */
-  .savings {{ background:linear-gradient(135deg,#1b5e20,#2e7d32);
-              color:white; border-radius:12px; padding:2rem;
-              text-align:center; margin-top:1.5rem; }}
-  .savings-pct {{ font-size:4rem; font-weight:900; line-height:1; }}
-  .savings-label {{ font-size:1rem; opacity:.85; margin-top:.25rem; }}
-  .savings-stats {{ display:flex; justify-content:center; gap:3rem;
-                    margin-top:1.5rem; flex-wrap:wrap; }}
-  .stat-val {{ font-size:1.6rem; font-weight:800; }}
-  .stat-lbl {{ font-size:.78rem; opacity:.8; margin-top:.1rem; }}
-
   /* Technical detail */
+  .executor-label {{ font-size:.78rem; font-weight:700; text-transform:uppercase;
+                     letter-spacing:.08em; color:var(--gray); margin:.75rem 0 .5rem; }}
   .step-row {{ border:1px solid var(--border); border-radius:8px;
                margin-bottom:.7rem; overflow:hidden; }}
   .step-meta {{ display:flex; align-items:center; gap:.8rem; padding:.75rem 1rem;
@@ -367,8 +341,7 @@ def generate_report(
   .output-line {{ margin-top:.6rem; padding:.5rem .8rem; background:#f0fff4;
                   border-left:3px solid var(--green); border-radius:4px;
                   font-size:.82rem; color:#1a5c35; }}
-  .badge {{ padding:.2rem .55rem; border-radius:10px; font-size:.72rem;
-            font-weight:700; color:white; }}
+  .badge {{ padding:.2rem .55rem; border-radius:10px; font-size:.72rem; font-weight:700; color:white; }}
   .ok  {{ color:var(--green); font-weight:600; }}
   .err {{ color:var(--red); font-weight:600; }}
   .muted {{ color:var(--gray); }}
@@ -376,8 +349,7 @@ def generate_report(
   code {{ font-family:"SF Mono","Fira Code",monospace; }}
 
   .footer {{ text-align:center; color:var(--gray); font-size:.8rem;
-             margin-top:2rem; padding-top:1rem;
-             border-top:1px solid var(--border); }}
+             margin-top:2rem; padding-top:1rem; border-top:1px solid var(--border); }}
 </style>
 </head>
 <body>
@@ -389,9 +361,8 @@ def generate_report(
     <p class="sub">Planner-Executor Pattern — AI-native data analysis demo</p>
     <div class="goal-box">🎯 <strong>Goal:</strong> {goal}</div>
     <div class="hero-meta">
-      <span>📊 {len(final_df)} customers analysed</span>
-      <span>🔢 {len(steps)} pipeline steps</span>
-      <span>✅ {successes}/{len(execution_log)} steps succeeded</span>
+      <span>📊 {len(claude_enriched)} customers analysed</span>
+      <span>🔢 {n} pipeline steps</span>
       <span>⏱ {total_seconds:.0f}s total runtime</span>
       <span>📅 {datetime.now().strftime('%d %b %Y, %H:%M')}</span>
     </div>
@@ -400,7 +371,7 @@ def generate_report(
   <!-- HOW IT WORKS -->
   <div class="card">
     <div class="card-title">⚙️ How it works</div>
-    <div class="card-sub">Two models, two jobs — each doing what it's best at.</div>
+    <div class="card-sub">One plan, two executors — running in parallel to compare cost and quality.</div>
     <div class="flow">
       <div class="flow-box box-cloud">
         <h3>🧠 Planner</h3>
@@ -409,15 +380,15 @@ def generate_report(
       </div>
       <div class="flow-arrow">→</div>
       <div class="flow-box box-local">
-        <h3>⚙️ Executor</h3>
+        <h3>⚙️ Ollama</h3>
         <p>Local model follows the plan — generates and runs pandas code for each step</p>
         <span class="tag tag-local">Runs on your machine · free</span>
       </div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-box box-report">
-        <h3>📊 Results</h3>
-        <p>Actual computed data tables — verifiable numbers, not LLM interpretation</p>
-        <span class="tag tag-local">Ground truth</span>
+      <div class="flow-arrow">+</div>
+      <div class="flow-box box-cloud" style="border-color:#ce93d8;background:#f3e5f5">
+        <h3>☁️ Claude Haiku</h3>
+        <p>Same plan, same steps — executed via the API to measure real token cost</p>
+        <span class="tag" style="background:#6a1b9a">Cloud API · paid</span>
       </div>
     </div>
   </div>
@@ -426,41 +397,28 @@ def generate_report(
   <div class="card">
     <div class="card-title">📊 Results</div>
     <div class="card-sub">
-      Computed directly from the processed data — every number is traceable back to the CSV.
+      Computed from Claude Haiku's processed data — verifiable numbers traceable back to the CSV.
     </div>
     {results_html}
   </div>
 
-  <!-- COST SAVINGS -->
+  <!-- COMPARISON -->
   <div class="card">
-    <div class="card-title">💰 Cost Comparison</div>
-    {'<div class="card-sub"><strong>Actual cost</strong> = Claude plans once, local model executes everything. &nbsp;<strong>If all Haiku</strong> = what this run cost using Claude Haiku for every step.</div>' if tokens_are_real else '<div class="card-sub"><strong>Actual cost</strong> = Claude plans once, local model executes everything. &nbsp;<strong>If all Claude</strong> = estimated cost if Claude Haiku had executed every step via the API.</div>'}
-    <table>
-      <thead>
-        <tr>
-          <th>Phase</th>
-          <th>Model</th>
-          <th class="center">Tokens (in / out)</th>
-          <th class="center">{'This run' if tokens_are_real else 'Actual cost'}</th>
-          <th class="center">{'If all Opus' if tokens_are_real else 'If all Haiku'}</th>
-        </tr>
-      </thead>
-      <tbody>{cost_rows}</tbody>
-    </table>
-
-    {'<div class="savings" style="background:linear-gradient(135deg,#7b1fa2,#4a148c)"><div class="savings-pct">$' + f'{hypothetical:.4f}' + '</div><div class="savings-label">total cost running execution with Claude Haiku — vs $0.00 with Ollama</div><div class="savings-stats"><div><div class="stat-val">$' + f'{actual_cost:.4f}' + '</div><div class="stat-lbl">Planning (Claude Opus 4.6)</div></div><div><div class="stat-val">$' + f'{exec_est_cost:.4f}' + '</div><div class="stat-lbl">Execution (Claude Haiku)</div></div><div><div class="stat-val">$0.0000</div><div class="stat-lbl">Execution cost with Ollama</div></div></div></div>' if tokens_are_real else f'<div class="savings"><div class="savings-pct">{savings_pct:.0f}%</div><div class="savings-label">cost reduction with the planner-executor pattern</div><div class="savings-stats"><div><div class="stat-val">${actual_cost:.4f}</div><div class="stat-lbl">Actual cost (this run)</div></div><div><div class="stat-val">${hypothetical:.4f}</div><div class="stat-lbl">If Claude Haiku ran everything</div></div><div><div class="stat-val">${exec_est_cost:.4f}</div><div class="stat-lbl">Saved by running locally</div></div></div></div>'}
+    <div class="card-title">⚡ Executor Comparison</div>
+    <div class="card-sub">Same plan, same data — head-to-head on success rate, speed, and cost.</div>
+    {comparison_table}
   </div>
 
   <!-- TECHNICAL DETAIL -->
   <div class="card">
     <div class="card-title">🔬 Technical Detail</div>
-    <div class="card-sub">The full pipeline — expand any step to see the code the local model generated.</div>
-    {steps_detail}
+    <div class="card-sub">Expand any step to see the code each model generated.</div>
+    {_steps_detail_html(steps, ollama_log, f"Ollama — {OLLAMA_MODEL}")}
+    {_steps_detail_html(steps, claude_log, f"Claude Haiku — {CLAUDE_EXECUTOR_MODEL}")}
   </div>
 
   <div class="footer">
     Data Pipeline Agent &nbsp;·&nbsp; Planner: Claude Opus 4.6
-    &nbsp;·&nbsp; Executor: {executor_model}
     &nbsp;·&nbsp; {datetime.now().strftime('%Y-%m-%d')}
   </div>
 
