@@ -203,4 +203,4 @@ def execute_pipeline(csv_path: str, plan: dict) -> tuple[dict, list]:
     print("  [insights] Generating insights with Ollama...")
     insights = generate_insights(df, plan.get("insights_prompt", "Summarise the data."))
 
-    return {"final_df": df, "insights": insights}, execution_log
+    return {"final_df": df, "enriched_df": enriched_df, "insights": insights}, execution_log
