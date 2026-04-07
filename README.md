@@ -62,9 +62,7 @@ ollama pull qwen2.5-coder:7b   # ~4 GB, runs well on M1 Pro 16 GB
 
 ### 3 · Python dependencies
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+poetry install
 ```
 
 ---
@@ -73,10 +71,10 @@ pip install -r requirements.txt
 
 ```bash
 # Default demo (SaaS customer churn analysis)
-python main.py
+poetry run python main.py
 
 # Custom CSV and goal
-python main.py --csv path/to/data.csv --goal "Identify top performing products by region"
+poetry run python main.py --csv path/to/data.csv --goal "Identify top performing products by region"
 ```
 
 The report is written to `output/report.html` — open it in any browser.
