@@ -85,6 +85,23 @@ def main():
         ollama_results, ollama_log, ollama_time = ollama_future.result()
         claude_results, claude_log, claude_time = claude_future.result()
 
+    # Fill Ollama log with Claude token averages from this run (for comparison only).
+    claude_in_tokens = [s["claude_input_tokens"] for s in claude_log if s.get("tokens_are_real")]
+    claude_out_tokens = [s["claude_output_tokens"] for s in claude_log if s.get("tokens_are_real")]
+    if claude_in_tokens and claude_out_tokens:
+        avg_in = sum(claude_in_tokens) / len(claude_in_tokens)
+        avg_out = sum(claude_out_tokens) / len(claude_out_tokens)
+        avg_cost = (
+            avg_in * claude_executor_mod.CLAUDE_INPUT_COST_PER_TOKEN +
+            avg_out * claude_executor_mod.CLAUDE_OUTPUT_COST_PER_TOKEN
+        )
+        for s in ollama_log:
+            s["claude_input_tokens"] = round(avg_in, 1)
+            s["claude_output_tokens"] = round(avg_out, 1)
+            s["claude_cost"] = avg_cost
+            s["tokens_are_real"] = False
+            s["tokens_source"] = "claude_avg_this_run"
+
     ollama_ok = sum(1 for s in ollama_log if s["success"])
     claude_ok = sum(1 for s in claude_log if s["success"])
     print(f"\n  ✓ Both executors done")
@@ -106,8 +123,8 @@ def main():
 
     # ── SUMMARY ──────────────────────────────────────────────────────────────
     planning_cost  = planner_tokens["total_cost"]
-    ollama_cost    = sum(s["est_claude_cost"] for s in ollama_log)   # $0
-    claude_ex_cost = sum(s["est_claude_cost"] for s in claude_log)   # real $
+    ollama_cost    = 0.0  # local execution is free
+    claude_ex_cost = sum(s["claude_cost"] for s in claude_log)   # real $
 
     print(f"\n{'═' * 62}")
     print("  RESULTS")

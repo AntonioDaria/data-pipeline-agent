@@ -164,7 +164,7 @@ def generate_report(
 
     # ── Cost numbers ──────────────────────────────────────────────────────────
     planning_cost    = planner_tokens["total_cost"]
-    claude_exec_cost = sum(s["est_claude_cost"] for s in claude_log)
+    claude_exec_cost = sum(s["claude_cost"] for s in claude_log)
     ollama_ok        = sum(1 for s in ollama_log if s["success"])
     claude_ok        = sum(1 for s in claude_log if s["success"])
     n                = len(steps)

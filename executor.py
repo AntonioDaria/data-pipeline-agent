@@ -20,13 +20,8 @@ from contextlib import redirect_stdout
 OLLAMA_MODEL    = "qwen2.5-coder:7b"
 OLLAMA_BASE_URL = "http://localhost:11434"
 
-# Measured token usage from a Claude Haiku execution run (--executor claude).
-# Input is higher than intuition suggests — the prompt includes DataFrame schema,
-# column dtypes, and the pandas hint. Output is short — just the code snippet.
-ESTIMATED_CLAUDE_INPUT_TOKENS_PER_STEP  = 900
-ESTIMATED_CLAUDE_OUTPUT_TOKENS_PER_STEP = 130
-CLAUDE_INPUT_COST_PER_TOKEN  = 5.00  / 1_000_000
-CLAUDE_OUTPUT_COST_PER_TOKEN = 25.00 / 1_000_000
+# Claude token/cost fields are populated after execution by main.py using
+# real averages from the Claude executor in the same run.
 
 EXECUTOR_SYSTEM = """You are a Python/pandas engineer. Write working pandas code for the step described.
 
@@ -174,11 +169,6 @@ def execute_pipeline(csv_path: str, plan: dict) -> tuple[dict, list]:
         result_df, code, output, success = execute_step(input_df, step)
         elapsed = round(time.time() - t0, 2)
 
-        est_cost = (
-            ESTIMATED_CLAUDE_INPUT_TOKENS_PER_STEP  * CLAUDE_INPUT_COST_PER_TOKEN +
-            ESTIMATED_CLAUDE_OUTPUT_TOKENS_PER_STEP * CLAUDE_OUTPUT_COST_PER_TOKEN
-        )
-
         execution_log.append({
             "step_id":   step["step_id"],
             "name":      step["name"],
@@ -190,9 +180,11 @@ def execute_pipeline(csv_path: str, plan: dict) -> tuple[dict, list]:
             "rows_out":  len(result_df),
             "duration":  elapsed,
             "model":     OLLAMA_MODEL,
-            "est_claude_input_tokens":  ESTIMATED_CLAUDE_INPUT_TOKENS_PER_STEP,
-            "est_claude_output_tokens": ESTIMATED_CLAUDE_OUTPUT_TOKENS_PER_STEP,
-            "est_claude_cost":          est_cost,
+            "claude_input_tokens":  0,
+            "claude_output_tokens": 0,
+            "claude_cost":          0.0,
+            "tokens_are_real":      False,
+            "tokens_source":        "local_no_tokens",
         })
 
         df = result_df

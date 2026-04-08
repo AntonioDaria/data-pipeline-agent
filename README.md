@@ -41,7 +41,7 @@
 └────────────────────────────────────────────────────────────┘
 ```
 
-**Why this works:** Claude's plan is so precise (action type, pandas hint, validation rule) that the local model only needs to fill in the code — it never needs to reason about *what* to do, only *how* to do it. This collapses the execution quality gap between large and small models.
+**Why this works (in practice):** Claude's plan is precise (action type, pandas hint, validation rule), so the local model focuses on *how* to implement each step. This often narrows the quality gap, but small models can still drop columns or make subtle mistakes without extra guardrails.
 
 ---
 
@@ -87,28 +87,36 @@ The report is written to `output/report.html` — open it in any browser.
 data-pipeline-agent/
 ├── main.py          # Orchestrator — runs the three phases
 ├── planner.py       # Claude Opus 4.6 — produces the JSON plan
-├── executor.py      # Ollama — executes each step, tracks estimated savings
+├── executor.py      # Ollama — executes each step locally
 ├── report.py        # Generates output/report.html
 ├── data/
 │   └── customers.csv   # Demo dataset: 40 SaaS customers
 ├── output/          # Generated reports (git-ignored)
-└── requirements.txt
 ```
 
 ---
 
 ## Cost Model
 
-| Phase     | Model                   | Tokens        | Cost              |
-|-----------|-------------------------|---------------|-------------------|
-| Planning  | Claude Opus 4.6         | ~1,500        | ~$0.005           |
-| Execution | qwen2.5-coder:7b (local)| —             | **$0.00**         |
-| Insights  | qwen2.5-coder:7b (local)| —             | **$0.00**         |
-| **Total** |                         |               | **~$0.005**       |
-
-If Claude had executed every step instead: ~$0.02–0.04 → **70–85% savings**
+Costs vary by dataset size and plan complexity. The report shows real token usage and costs for the Claude calls, and local execution is free.
 
 The exact numbers are shown in `output/report.html` after each run.
+
+---
+
+## Observed Findings and Conclusions
+
+These observations are from real runs of the demo on the included dataset and default goal.
+
+**What we observed**
+- Total runtime is dominated by the slowest executor. In a recent run, planning took ~36s, Claude execution ~22s, and Ollama execution ~156s, leading to a total runtime around ~3 minutes.
+- Ollama can fail on downstream steps when it drops columns created earlier. In the observed run, a step omitted `days_since_login`, causing a cascade of `KeyError` failures for `churn_risk_score` and `churn_risk_tier` in later steps.
+- Claude Haiku did not exhibit these failures on the same plan. It preserved required columns, so dependent steps succeeded.
+
+**Conclusions**
+- Failures are primarily due to model output quality rather than bugs in the executor code.
+- Smaller local models are more likely to generate code that unintentionally drops columns or violates implicit pipeline assumptions.
+- If consistency is critical, add guardrails: enforce column preservation, validate required columns after each step, and retry with stricter prompts when necessary.
 
 ---
 

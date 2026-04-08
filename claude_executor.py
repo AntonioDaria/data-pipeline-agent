@@ -154,11 +154,12 @@ def execute_pipeline(csv_path: str, plan: dict) -> tuple[dict, list]:
             "rows_out":  len(result_df),
             "duration":  elapsed,
             "model":     CLAUDE_EXECUTOR_MODEL,
-            # Real measured values — not estimates
-            "est_claude_input_tokens":  input_tokens,
-            "est_claude_output_tokens": output_tokens,
-            "est_claude_cost":          step_cost,
-            "tokens_are_real":          True,
+            # Real measured values from Anthropic usage
+            "claude_input_tokens":  input_tokens,
+            "claude_output_tokens": output_tokens,
+            "claude_cost":          step_cost,
+            "tokens_are_real":      True,
+            "tokens_source":        "anthropic_usage",
         })
 
         df = result_df
